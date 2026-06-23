@@ -1,0 +1,403 @@
+================================================================================
+IBM RACING — WORKFLOW (Sezon 2, sensors-only edition)
+================================================================================
+
+Lokalizacja kodu:    C:\Users\kamil\Desktop\IBMracing\RaceYourCode\gym_torcs\
+Lokalizacja TORCS:   C:\Users\kamil\Desktop\IBMracing\torcs\
+Python venv:         C:\torcs-env\
+Sprzęt:              AMD Ryzen 5 5500 + RX 6700 XT + Windows 10
+
+To jest TWOJE GŁÓWNE README. Zaczynaj zawsze tutaj.
+Plik teoretyczny: RaceYourCode\gym_torcs\theory.md
+
+================================================================================
+0. CO JEST W PROJEKCIE
+================================================================================
+
+c:\Users\kamil\Desktop\IBMracing\
+├── WORKFLOW.txt                          ← TEN PLIK
+├── torcs\
+│   ├── torcs.exe                         ← uruchamiasz dwukliknięciem
+│   ├── drivers\scr_server\               ← kierowca podpinany przez UDP (port 3001)
+│   └── ...
+│
+└── RaceYourCode\gym_torcs\
+    ├── train_ppo.py                      ← główny skrypt treningu (CLI)
+    ├── ppo_agent.py                      ← sieci MLP + PPO (sensors-only)
+    ├── torcs_env_windows.py              ← Windows env (reward shaping Patryka)
+    ├── snakeoil3_gym.py                  ← klient UDP (NIE EDYTUJ)
+    ├── theory.md                         ← teoria PPO + TORCS
+    ├── diagnose_ppo.py                   ← skrypt diagnostyczny
+    ├── convert_checkpoint_68_to_70.py    ← konwersja starych checkpointów
+    ├── check_phase1.py                   ← weryfikacja Fazy 1
+    ├── check_phase2.py                   ← weryfikacja Fazy 2
+    ├── check_corkscrew.py                ← weryfikacja fine-tune corkscrew
+    ├── practice.xml                      ← konfiguracja wyścigu
+    ├── checkpoints\                      ← modele .pt
+    ├── logs\train_log.csv                ← jeden wiersz/update PPO
+    └── telemetry\crashes.csv             ← każdy crash z powodem
+
+================================================================================
+1. STATUS AKTUALNEJ WERSJI (co działa, co naprawiono)
+================================================================================
+
+[✓] SENSORS-ONLY (sprzątnięte - bez CNN, bez screen-capture)
+    Vision NIE jest częścią projektu. Czysty MLP na 70 sensorach.
+
+[✓] NAPRAWA ASYNC-CRASH PATRYKA
+    Plik: train_ppo.py - funkcje _pause_torcs_processes / _resume_torcs_processes
+    wokół agent.update(buffer). TORCS jest suspendowany na czas update'u PPO
+    (0.5-2s), nie wjeżdża w bandę na ślepo.
+
+[✓] HAMOWANIE WŁĄCZONE
+    Plik: torcs_env_windows.py - step(). u[1] ≥ 0 → gaz, u[1] < 0 → hamulec.
+
+[✓] REWARD SHAPING (Patryk-style)
+    Plik: torcs_env_windows.py - step(). Detale w theory.md.
+
+[✓] OBSERWACJA POSZERZONA O ANGLE + TRACKPOS (sensor_dim=70)
+    Stare checkpointy 68-dim można skonwertować:
+    python convert_checkpoint_68_to_70.py <old.pt>
+
+[✓] LR I ENTROPY DECAY (liniowe, 100% → 10% w trakcie total_steps)
+
+[✓] CSV LOGGING (logs\train_log.csv)
+    Jedna linia per update PPO: pi_loss, v_loss, kl, entropy, fps, lr, ent_coef.
+
+[✓] CRASH TELEMETRY (telemetry\crashes.csv)
+
+[✓] OPCJONALNE GPU (--device directml dla AMD RX 6700 XT)
+    Sensors-only - CPU jest bezpieczny i wystarczający (sieć tania, bottleneck
+    to TORCS@50Hz). DirectML jest opcjonalny, dla AMD GPU.
+
+================================================================================
+2. JEDNORAZOWY SETUP (~5 minut, robisz RAZ)
+================================================================================
+
+[A] Aktywuj venv:
+    C:\torcs-env\Scripts\activate
+
+[B] Doinstaluj pakiety:
+    pip install psutil
+
+    psutil           — naprawa async-crash (KONIECZNE)
+
+[C] (Opcjonalnie, GPU dla AMD):
+    pip install torch-directml
+
+[D] Sprawdź:
+    python -c "import torch; print('torch', torch.__version__, 'cuda?', torch.cuda.is_available())"
+    Oczekiwane: torch 2.x  cuda? False (masz AMD - to OK).
+
+[E] Sprawdź że TORCS się uruchamia:
+    Dwuklik: C:\Users\kamil\Desktop\IBMracing\torcs\torcs.exe
+    Pojawi się menu TORCS. Możesz zamknąć.
+
+================================================================================
+3. KAŻDORAZOWO PRZED TRENINGIEM (4 kliknięcia)
+================================================================================
+
+[KROK 1] Uruchom TORCS-a
+------------------------
+1. Otwórz C:\Users\kamil\Desktop\IBMracing\torcs\torcs.exe
+2. Race → Practice → Configure Race
+3. Track: wybierz tor (g-track-1 na start, corkscrew docelowy)
+   Players: USUŃ wszystkich poza JEDNYM, ten ma być 'scr_server' (NIE bt)
+4. Race → Practice → New Race
+5. Pojawi się NIEBIESKI EKRAN "Waiting for clients..." → port 3001 otwarty.
+
+[KROK 2] Otwórz drugi terminal
+-------------------------------
+PowerShell:
+    C:\torcs-env\Scripts\activate
+    cd C:\Users\kamil\Desktop\IBMracing\RaceYourCode\gym_torcs
+
+[KROK 3] ODPAL TRENING
+----------------------
+Wybierz wariant zależnie od FAZY (sekcja 4 niżej).
+
+Pierwszy raz w życiu (sanity check):
+    python train_ppo.py --total-steps 50000
+
+================================================================================
+4. PLAN TRENINGOWY — FAZA PO FAZIE
+================================================================================
+
+Trening podzielony jest na 4 fazy. NIE PRZEPLATAJ - idź sekwencyjnie.
+
+═══════════════════════════════════════════════════════════════════════════════
+FAZA 0 — SANITY CHECK   ⏱ 10-30 minut
+═══════════════════════════════════════════════════════════════════════════════
+Cel: sprawdzić że wszystko się łączy i auto się rusza.
+
+Tor:        g-track-1 (prosty, szeroki, owalny)
+
+Komenda:
+    python train_ppo.py --total-steps 50000
+
+Oczekiwane wartości NA KONIEC fazy 0 (50k steps):
+    • ep_len:           rośnie od ~50 do ≥200
+    • ep_return:        rośnie od mocno ujemnego (-50..-100) do ~0..+30
+    • crashes.csv:      DOMINUJĄ "off_track", a NIE "wrong_way"
+    • approx_kl:        0.005-0.04 (zdrowy zakres)
+    • fps:              30-60 na CPU
+    • brak NaN w pi_loss / v_loss
+
+Jeśli auto stoi cały czas, ep_len ~50:
+    - Sprawdź że TORCS jest na BLUE SCREEN
+    - Sprawdź że scr_server (NIE bt) jest jedynym kierowcą
+
+Kiedy idziesz dalej:    ep_return wyraźnie rośnie + ep_len > 200.
+
+═══════════════════════════════════════════════════════════════════════════════
+FAZA 1 — TRENING BAZOWY   ⏱ 12-24h, 5M kroków
+═══════════════════════════════════════════════════════════════════════════════
+Cel: nauczyć auto JEŹDZIĆ na prostym torze.
+
+Tor:        g-track-1 (ten sam)
+
+Komenda:
+    python train_ppo.py --total-steps 5000000
+
+Oczekiwane METRYKI w czasie:
+
+  step          ep_return        ep_len         opis stanu
+  ───────────────────────────────────────────────────────────────────────────
+     50 000     -10 .. +30       150-400        zaczyna się ruszać, sporo crashów
+    250 000     +20 .. +80       400-900        trzyma pas, miewa korekty
+    500 000     +60 .. +180      900-2 500      przejeżdża 2-3 zakręty
+  1 000 000     +150 .. +350     2 500-5 000    sporadycznie pełne okrążenie
+  2 000 000     +300 .. +550     5 000-9 000    stabilnie ~1.5 okrążenia
+  5 000 000     +500 .. +900     9 000+         czyste okrążenia ~80-100 km/h śr
+
+Pozostałe metryki — CO MUSI BYĆ PRAWDĄ po 500k:
+    • approx_kl ∈ [0.005, 0.03]
+    • entropy: powoli spada (linear decay)
+    • fps:    25-50 (CPU)
+    • crashes.csv: DOMINUJĄ "off_track"; "wrong_way" < 10%
+
+Decision tree:
+    ✗ ep_return stoi:               wznow z `--lr 1e-4 --resume checkpoints\ppo_latest.pt`
+    ✗ approx_kl > 0.05:             wznow z `--lr 1e-4`
+    ✗ approx_kl < 0.001:            wznow z `--lr 5e-4 --entropy-coef 0.02`
+    ✗ Return rośnie, ep_len stoi:   zwiększ karę damage w torcs_env_windows.py
+
+Sprawdź:
+    python check_phase1.py
+
+Kiedy idziesz dalej:    ep_return ≥ 500 stabilnie, ep_len > 9000.
+
+═══════════════════════════════════════════════════════════════════════════════
+FAZA 2 — KONSOLIDACJA NA INNYM TORZE   ⏱ 6-12h, 2M kroków
+═══════════════════════════════════════════════════════════════════════════════
+Cel: sprawdzić generalizację. Polityka nie powinna być wyłącznie pamięcią g-track-1.
+
+Tor:        forza (też prosty, ale inne zakręty)
+Bazujemy:   na checkpoincie z fazy 1
+
+Najpierw w TORCS przełącz się na 'forza' i odpal New Race.
+Potem:
+    python train_ppo.py --resume checkpoints\ppo_best.pt --total-steps 2000000 --lr 1e-4
+
+Oczekiwane:
+    PIERWSZE 100k pewnie spadnie do +100..+200 (inny tor = inne zakręty)
+       500 000   +400 .. +700    polityka adaptuje
+     2 000 000   +700 .. +1000   równie dobrze co g-track-1
+
+Sprawdź:
+    python check_phase2.py
+
+Kiedy idziesz dalej:    ep_return na 'forza' ≥ 80% wartości z Fazy 1.
+
+═══════════════════════════════════════════════════════════════════════════════
+FAZA 3 — GENERALIZACJA / TRUDNY TOR (corkscrew)   ⏱ 6-12h, 1-2M kroków
+═══════════════════════════════════════════════════════════════════════════════
+Cel: nauczyć trudnego toru z szykaną i przewyższeniem.
+
+Tor:        corkscrew
+
+WAŻNE: corkscrew jest trudny. UŻYJ `--lenient` (łaskawsze terminacje).
+
+Komenda:
+    python train_ppo.py --resume checkpoints\ppo_best.pt --save-dir checkpoints_corkscrew --total-steps 1500000 --lr 5e-5 --entropy-coef 0.005 --lenient
+
+Klucz: `--save-dir checkpoints_corkscrew` żeby nie nadpisać bazowego modelu.
+
+Oczekiwane (z bazą +700 z Fazy 2):
+    Pierwsze 100k: spadek do +50..+200 (model uczy się szykany)
+    500 000:       +200 .. +400
+    1 500 000:     +400 .. +700 (z szykaną pod kontrolą)
+
+Sprawdź:
+    python check_corkscrew.py
+
+═══════════════════════════════════════════════════════════════════════════════
+FAZA 4 — FINE-TUNE NA TORZE ZAWODÓW   ⏱ 6-12h
+═══════════════════════════════════════════════════════════════════════════════
+Cel: ostatnie szlify, mały LR, mała entropia. Tylko docelowy tor.
+
+Tor:        TEN co na zawodach
+Vision:     bez znaczenia (sensors-only)
+
+Komenda:
+    python train_ppo.py --resume checkpoints\ppo_best.pt --total-steps 1000000 --lr 5e-5 --entropy-coef 0.001
+
+Oczekiwane:
+    ep_return wzrośnie o 10-20% wobec generalizacji z fazy 3.
+    KL bardzo niski (~0.005), polityka prawie nie ewoluuje (dotuczanie).
+
+================================================================================
+5. METRYKI — JAK SPRAWDZAĆ POSTĘP
+================================================================================
+
+W trakcie treningu:
+- terminal co rollout:
+      [update] steps=N pi=... v=... ent=... kl=... fps=... lr=... ent_c=...
+- co epizod:
+      ep N | steps M | len L | return R
+- co 250 kroków w epizodzie:
+      [ep N step M] r=... sp=... trk=... min_fwd=... ang=...
+
+Po treningu - sanity skrypty:
+    python check_phase1.py           # Fazy 1
+    python check_phase2.py           # Fazy 2
+    python check_corkscrew.py        # Fazy 3 (corkscrew)
+    python diagnose_ppo.py           # diagnostyka modelu
+
+Analiza w pandas:
+
+import pandas as pd
+df = pd.read_csv('logs/train_log.csv')
+df.plot(x='total_steps', y='ep_return')          # główny wykres
+df.plot(x='total_steps', y='approx_kl')          # KL stabilność
+df.plot(x='total_steps', y='entropy')            # malejąca eksploracja
+
+crashes = pd.read_csv('telemetry/crashes.csv')
+crashes['reason'].value_counts()
+# Dobry rozkład: ~80% off_track, ~15% no_progress, ~5% wrong_way
+
+================================================================================
+6. GPU vs CPU — DECYZJA NA TWOIM SPRZĘCIE (RX 6700 XT + Ryzen 5 5500)
+================================================================================
+
+KRÓTKO: Default = CPU. To bezpieczne i wystarczające dla sensors-only.
+
+Dlaczego nie GPU automatycznie?
+   1. CUDA nie istnieje na AMD (NVIDIA-only).
+   2. DirectML jest fragile - niektóre operacje cicho fallbackują na CPU.
+   3. **TORCS jest jednowątkowym CPU bottleneckiem**: tyka 50 Hz, GPU
+      nie obejdziesz. PPO update zajmuje 0.5-2 s na CPU dla MLP - i tak
+      zatrzymujemy TORCS na ten czas (naprawa Patryka), więc szybsze GPU
+      oszczędza max sekundę na rollout.
+
+DirectML jest opt-in:
+    pip install torch-directml
+    python train_ppo.py --device directml ...
+
+================================================================================
+7. DIAGNOSTYKA — JEŚLI COŚ SIĘ SYPIE
+================================================================================
+
+"Connection refused" / Python wisi po starcie:
+   → TORCS NIE jest na blue screen. Race → Practice → New Race.
+   → Sprawdź czy scr_server (NIE bt) jest kierowcą.
+
+"ModuleNotFoundError: psutil":
+   → pip install psutil
+   → BEZ psutil = bez naprawy async-crash. NIE TRENUJ bez tego.
+
+TORCS zwisł, okno bez ramki / nie reaguje:
+   → w innym terminalu: taskkill /f /im torcs.exe
+   → uruchom TORCS od nowa, Race → Practice → New Race
+   → wznów: python train_ppo.py --resume checkpoints\ppo_latest.pt
+
+Auto stoi w miejscu po 100k kroków:
+   → Normalne na początku. Daj 200-500k.
+   → Sprawdź entropy w logu: powinna być > 0.5 na początku.
+   → Jeśli ent_coef już zjechało < 0.005 → wznów z --entropy-coef 0.02.
+
+Return rośnie ale auto wciąż crashuje:
+   → Patrz na ep_length, NIE tylko return. Auto może zbierać punkty za speed
+     i akceptować crash. Zwiększ karę damage w torcs_env_windows.py do -10/-20.
+
+KL > 0.05 co update:
+   → LR za duży. Wznów z --lr 1e-4.
+
+KL < 0.001 zawsze:
+   → LR za mały / clip za ciasny. Wznów z --lr 5e-4 --entropy-coef 0.02.
+
+NaN w pi_loss:
+   → Spike rewardu (np. damage_diff masywny). Restart.
+
+crashes.csv full "wrong_way":
+   → Polityka uczy się jechać tyłem. Skasuj checkpoints/, restartuj.
+
+================================================================================
+8. CO GDZIE JEST ZAPISANE
+================================================================================
+
+Plik                                          | Co tam jest
+----------------------------------------------|----------------------------------
+WORKFLOW.txt                                  | TEN PLIK
+RaceYourCode\gym_torcs\theory.md              | TEORIA: PPO + TORCS + funkcje
+RaceYourCode\gym_torcs\train_ppo.py           | Główny skrypt + naprawa async-crash
+RaceYourCode\gym_torcs\ppo_agent.py           | Sieci + PPO (sensors-only)
+RaceYourCode\gym_torcs\torcs_env_windows.py   | Env + reward + terminacje
+RaceYourCode\gym_torcs\snakeoil3_gym.py       | Klient UDP do TORCS (NIE EDYTUJ)
+RaceYourCode\gym_torcs\checkpoints\           | Modele .pt
+RaceYourCode\gym_torcs\logs\train_log.csv     | Metryki każdego update PPO
+RaceYourCode\gym_torcs\telemetry\crashes.csv  | Każdy crash z powodem
+
+================================================================================
+9. CHEAT-SHEET — TYPOWA SESJA
+================================================================================
+
+(2 terminale + TORCS)
+
+Terminal 1 (TORCS):
+   1. Klik: C:\Users\kamil\Desktop\IBMracing\torcs\torcs.exe
+   2. Race → Practice → New Race → niebieski ekran
+
+Terminal 2 (trening):
+   C:\torcs-env\Scripts\activate
+   cd C:\Users\kamil\Desktop\IBMracing\RaceYourCode\gym_torcs
+   python train_ppo.py --resume checkpoints\ppo_latest.pt
+
+(idziesz spać; trening leci sam)
+
+Wracasz:
+   • terminal: ostatnia linia [update] kl=... fps=...
+   • plik logs\train_log.csv: import do pandas
+   • plik telemetry\crashes.csv: jakie powody dominują?
+
+Koniec sesji:
+   Ctrl+C w terminalu 2 → auto-zapis ppo_latest.pt.
+
+Następna sesja:
+   --resume checkpoints\ppo_latest.pt
+
+================================================================================
+KOLEJNOŚĆ DLA CIEBIE (TL;DR):
+================================================================================
+
+[1]  pip install psutil
+[2]  Uruchom TORCS → Race → Practice → New Race (g-track-1, scr_server)
+[3]  W drugim terminalu:
+        C:\torcs-env\Scripts\activate
+        cd C:\Users\kamil\Desktop\IBMracing\RaceYourCode\gym_torcs
+[4]  FAZA 0 (sanity):
+        python train_ppo.py --total-steps 50000
+[5]  FAZA 1 (bazowy):
+        python train_ppo.py --total-steps 5000000
+[6]  FAZA 2 (konsolidacja):
+        # zmień tor na 'forza' w TORCS, New Race
+        python train_ppo.py --resume checkpoints\ppo_best.pt --total-steps 2000000 --lr 1e-4
+[7]  FAZA 3 (corkscrew):
+        # zmień tor na 'corkscrew' w TORCS, New Race
+        python train_ppo.py --resume checkpoints\ppo_best.pt --save-dir checkpoints_corkscrew --total-steps 1500000 --lr 5e-5 --entropy-coef 0.005 --lenient
+[8]  FAZA 4 (fine-tune na docelowym torze):
+        python train_ppo.py --resume checkpoints_corkscrew\ppo_best.pt --total-steps 1000000 --lr 5e-5 --entropy-coef 0.001
+
+================================================================================
+KONIEC. Powodzenia!
+================================================================================

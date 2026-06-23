@@ -1,0 +1,10 @@
+Collecting shimmy
+  Downloading shimmy-2.0.1-py3-none-any.whl.metadata (4.4 kB)
+Requirement already satisfied: numpy>=1.18.0 in c:\torcs-env\lib\site-packages (from shimmy) (2.2.6)
+Requirement already satisfied: gymnasium>=1.0.0 in c:\torcs-env\lib\site-packages (from shimmy) (1.2.3)
+Requirement already satisfied: cloudpickle>=1.2.0 in c:\torcs-env\lib\site-packages (from gymnasium>=1.0.0->shimmy) (3.1.2)
+Requirement already satisfied: typing-extensions>=4.3.0 in c:\torcs-env\lib\site-packages (from gymnasium>=1.0.0->shimmy) (4.15.0)
+Requirement already satisfied: farama-notifications>=0.0.1 in c:\torcs-env\lib\site-packages (from gymnasium>=1.0.0->shimmy) (0.0.6)
+Downloading shimmy-2.0.1-py3-none-any.whl (30 kB)
+Installing collected packages: shimmy
+Successfully installed shimmy-2.0.1
