@@ -1,0 +1,7 @@
+*.xml
+*.sh
+*.rgb
+*.ac
+*.acc
+vtorcs-RL-color
+/torcs-env
