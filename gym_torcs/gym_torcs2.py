@@ -43,7 +43,7 @@ from pathlib import Path
 TORCS_DIR = r"C:\torcs"
 TORCS_EXE = "wtorcs.exe"
 
-OBS_DIM = 49
+OBS_DIM = 48
 
 TRACK_LEN = 3608.45
 CP_AMOUNT = 160
@@ -403,7 +403,10 @@ class TorcsEnv(gym.Env):
         self._in_update = False
 
     def _keepalive_loop(self):
+        
         tlog("[KEEPALIVE] start")
+        self.client.R.d["meta"] = False  # upewnij się że meta nie jest True
+
         while self._keepalive_running:
             try:
                 self._safe_respond()
@@ -669,12 +672,26 @@ class TorcsEnv(gym.Env):
         self._speedup_torcs()
         time.sleep(0.01)
         self.last_u[:] = 0.0
+
+        self.stopped_steps = 0   # dodatkowe zabezpieczenie przed _fill_obs
+
         self._fill_obs(self.client.S.d)
         self.initial_reset = False
+        
+        
+        self._prefill_checkpoints(self.client.S.d)
+
         return self._obs_buf.copy()
 
     # ── Obs helper — wypełnia bufor IN-PLACE, bez alokacji ───────────────────
-
+    def _prefill_checkpoints(self, raw_obs):
+        dist = float(raw_obs.get("distFromStart", 0.0))
+        if dist < 10.0:          # normalny start z mety, nic nie rób
+            return
+        already = int(dist / _CP_SPACING)
+        already = min(already, CP_AMOUNT - 1)
+        self._cp_reached = set(range(already + 1))
+        
     def _fill_obs(self, raw_obs):
         buf = self._obs_buf
 
@@ -715,11 +732,13 @@ class TorcsEnv(gym.Env):
         buf[41] = np.clip(raw_obs.get("curLapTime", 0.0) / 150.0, 0.0, 1.0)
         buf[42] = np.clip(float(raw_obs.get("gear", 1)) / 6.0, 0.0, 1.0)
         buf[43] = np.clip(self._last_steer_delta / 2.0, -1.0, 1.0)
-        buf[44] = self.zone_penality_mult
-        buf[45] = 1.0 if self.in_corner else 0.0
-        buf[46] = 1.0 if self.in_slow_zone else 0.0
-        buf[47] = np.clip((self.target_speed_corner or self.target_speed_slow_zone or 320.0) / 320.0, 0.0, 1.0)
-        buf[48] = float(self.corner_direction)
+
+        
+
+        buf[44] = 1.0 if self.in_corner else 0.0
+        buf[45] = 1.0 if self.in_slow_zone else 0.0
+        buf[46] = np.clip((self.target_speed_corner or self.target_speed_slow_zone or 320.0) / 320.0, 0.0, 1.0)
+        buf[47] = float(self.corner_direction)
 
     # ── Misc ──────────────────────────────────────────────────────────────────
 
